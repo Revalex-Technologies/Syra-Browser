@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="color-scheme" content="dark light" />
+
+    <style>
+      body {
+        margin: 0;
+        font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        color: rgba(0, 0, 0, 0.54);
+      }
+
+      .main {
+        margin: 0 auto;
+        width: calc(100% - 32px);
+        max-width: 512px;
+        margin: 14vh auto 0;
+      }
+
+      #main-title {
+        font-size: 24px;
+        font-weight: 500;
+        margin-bottom: 16px;
+      }
+
+      #main-error-code {
+        font-size: 12px;
+      }
+
+      #main-description {
+        margin-bottom: 16px;
+        line-height: 1.5rem;
+      }
+
+      ul {
+        margin-top: 0;
+      }
+
+      #main-icon {
+        background-repeat: no-repeat;
+        width: 72px;
+        height: 72px;
+        margin-bottom: 40px;
+      }
+    </style>
+  </head>
+
+  <body>
+    <div class="main">
+      <div id="main-icon"></div>
+      <div id="main-title"></div>
+      <div id="main-description"></div>
+      <div id="main-error-code"></div>
+    </div>
+
+    <script>
+      const prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+      const theme = (typeof window !== 'undefined' && window.theme) ? window.theme : {};
+      const getTheme = (k, d) => (Object.prototype.hasOwnProperty.call(theme, k) ? theme[k] : d);
+
+      try {
+        const isDark = !!getTheme('webui.lightForeground', getTheme('pages.lightForeground', prefersDark));
+        // Allow an explicit per‑page override
+        const bg = getTheme('webui.networkError.backgroundColor',
+                  isDark ? '#212121'
+                         : getTheme('webui.backgroundColor',
+                             getTheme('webui.background',
+                               getTheme('pages.backgroundColor', '#ffffff'))));
+        document.body.style.backgroundColor = bg;
+      } catch (e) {}
+
+      const iconEl = document.getElementById('main-icon');
+      try {
+        const lightFg = !!getTheme('webui.lightForeground', getTheme('pages.lightForeground', prefersDark));
+        if (lightFg) {
+          document.body.style.color = 'rgba(255, 255, 255, 0.54)';
+          iconEl.style.filter = 'invert(1)';
+        }
+      } catch (e) {}
+
+// Parse errorCode and failed URL from location hash if provided: "#<code>|<encodedURL>"
+      let errorCode = undefined;
+      let failedURLFromHash = '';
+      try {
+        const hash = window.location.hash ? window.location.hash.substring(1) : '';
+        if (hash) {
+          const parts = hash.split('|');
+          if (parts[0]) errorCode = parts[0];
+          if (parts[1]) failedURLFromHash = decodeURIComponent(parts[1]);
+        }
+      } catch (e) {}
+
+      // Back-compat with old path-based scheme (split by '/')
+      if (!errorCode && window.location.href.split('/').length === 4) {
+        errorCode = window.location.href.split('/')[3];
+      }
+
+      // url comes from window.errorURL if injected, otherwise from the hash, otherwise referrer
+      const url = (typeof window !== 'undefined' && window.errorURL) || failedURLFromHash || document.referrer || '';
+
+      document.title = url || document.title;
+
+      const errorCodeEl = document.getElementById('main-error-code');
+      const titleEl = document.getElementById('main-title');
+      const descriptionEl = document.getElementById('main-description');
+
+      const pageUnresolvedIcon =
+        'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEgAAABIAQMAAABvIyEEAAAABlBMVEUAAABTU1OoaSf/AAAAAXRSTlMAQObYZgAAAENJREFUeF7tzbEJACEQRNGBLeAasBCza2lLEGx0CxFGG9hBMDDxRy/72O9FMnIFapGylsu1fgoBdkXfUHLrQgdfrlJN1BdYBjQQm3UAAAAASUVORK5CYII=';
+
+      const info = {
+        '-6': {
+          title: 'Your file was not found',
+          description: 'It may have been moved or deleted.',
+          code: 'ERR_FILE_NOT_FOUND',
+        },
+        '-10': {
+          title: 'This site can’t be reached',
+          description: 'The webpage at <b>' + url + '</b> might be temporarily down or it may have moved permanently to a new web address.',
+          code: 'ERR_ACCESS_DENIED',
+        },
+        '-105': {
+          title: 'This site can’t be reached',
+          description: '<b>' + url + '</b>’s server IP address could not be found.',
+          code: 'ERR_NAME_NOT_RESOLVED',
+        },
+        '-106': {
+          title: 'No internet',
+          description: 'Try: <ul><li>Checking the network cables, modem, and router</li><li>Reconnecting to Wi‑Fi</li></ul>',
+          code: 'ERR_INTERNET_DISCONNECTED',
+        },
+        '-108': {
+          title: 'This site can’t be reached',
+          description: 'The webpage at <b>' + url + '</b> might be temporarily down or it may have moved permanently to a new web address.',
+          code: 'ERR_ADDRESS_INVALID',
+        },
+        '-109': {
+          title: 'This site can’t be reached',
+          description: '<b>' + url + '</b> is unreachable.',
+          code: 'ERR_ADDRESS_UNREACHABLE',
+        },
+        '-300': {
+          title: 'This site can’t be reached',
+          description: 'The webpage at <b>' + url + '</b> might be temporarily down or it may have moved permanently to a new web address.',
+          code: 'ERR_INVALID_URL',
+        },
+        '-379': {
+          title: 'This site can’t be reached',
+          description: 'The webpage at <b>' + url + '</b> might be temporarily down or it may have moved permanently to a new web address.',
+          code: 'ERR_HTTP_RESPONSE_CODE_FAILURE',
+        },
+        'render-process-gone': {
+          title: 'Something went wrong',
+          description: 'The tab crashed while loading <b>' + url + '</b>. Try reloading.',
+          code: 'RENDER_PROCESS_GONE',
+        },
+        'generic': {
+          title: 'This site can’t be reached',
+          description: 'The webpage at <b>' + url + '</b> could not be loaded.',
+          code: 'ERR_FAILED',
+        }
+      };
+
+      const entry = info[String(errorCode)] || info['generic'];
+      titleEl.textContent = entry.title;
+      descriptionEl.innerHTML = entry.description;
+      errorCodeEl.textContent = entry.code;
+      iconEl.style.backgroundImage = 'url(' + pageUnresolvedIcon + ')';
+    </script>
+  </body>
+</html>

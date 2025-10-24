@@ -1,0 +1,102 @@
+import isPropValid from '@emotion/is-prop-valid';
+import { StyleSheetManager } from 'styled-components';
+import { observer } from 'mobx-react-lite';
+import * as React from 'react';
+import { ipcRenderer } from 'electron';
+import * as remote from '@electron/remote';
+
+import store from '../../store';
+import { Tabbar } from '../Tabbar';
+import { RightButtons } from '../RightButtons';
+import { NavigationButtons } from '../NavigationButtons';
+import { platform } from 'os';
+import { WindowsControls } from 'react-windows-controls';
+import { StyledTitlebar, FullscreenExitButton, NonDrag } from './style';
+import {
+  DEFAULT_TITLEBAR_HEIGHT,
+  COMPACT_TITLEBAR_HEIGHT,
+} from '~/constants/design';
+
+const onCloseClick = () => ipcRenderer.send(`window-close-${store.windowId}`);
+const onMinimizeClick = () => remote.getCurrentWindow().minimize();
+const onMaximizeClick = () => {
+  const win = remote.getCurrentWindow();
+  if (win.isMaximized()) win.unmaximize();
+  else win.maximize();
+};
+const onFullscreenExit = () => {
+  const win = remote.getCurrentWindow();
+  try {
+    win.setFullScreen(false);
+  } catch {}
+};
+
+export const Titlebar = observer(() => {
+  const compact = store.isCompact;
+
+  return (
+    <StyleSheetManager shouldForwardProp={(p) => isPropValid(p as any)}>
+      <StyledTitlebar
+        isFullscreen={store.isFullscreen}
+        isHTMLFullscreen={store.isHTMLFullscreen}
+        style={{
+          height: compact ? COMPACT_TITLEBAR_HEIGHT : DEFAULT_TITLEBAR_HEIGHT,
+        }}
+      >
+        {/* In COMPACT mode, Titlebar contains nav + tabs + right controls in one row */}
+        {compact ? (
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 6,
+              width: '100%',
+              height: '100%',
+              paddingLeft: 8,
+            }}
+          >
+            <NonDrag>
+              <NavigationButtons />
+            </NonDrag>
+
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <NonDrag>
+                <Tabbar />
+              </NonDrag>
+            </div>
+
+            <NonDrag>
+              <div style={{ display: 'flex', alignItems: 'center', zIndex: 2 }}>
+                <RightButtons />
+                {platform() !== 'darwin' && (
+                  store.isFullscreen ? (
+                    <FullscreenExitButton
+                      style={{ height: '100%' }}
+                      onMouseUp={onFullscreenExit}
+                      theme={store.theme}
+                    />
+                  ) : (
+                    <WindowsControls
+                      style={{ height: '100%', marginLeft: 8 }}
+                      onClose={onCloseClick}
+                      onMinimize={onMinimizeClick}
+                      onMaximize={onMaximizeClick}
+                      dark={store.theme['toolbar.lightForeground']}
+                    />
+                  )
+                )}
+              </div>
+            </NonDrag>
+          </div>
+        ) : (
+          /* In DEFAULT (non-compact) mode, Titlebar renders ONLY the Tabbar. Toolbar is rendered separately by App. */
+          <div style={{ height: '100%', width: '100%' }}>
+            <NonDrag>
+              <Tabbar />
+            </NonDrag>
+          </div>
+        )}
+      </StyledTitlebar>
+    </StyleSheetManager>
+  );
+});

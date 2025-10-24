@@ -1,0 +1,217 @@
+# .github/workflows/build.yml
+name: Build
+
+on:
+  push:
+    branches:
+      - '**'
+    tags-ignore:
+      - '**'
+
+jobs:
+  build:
+    name: Build on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    concurrency:
+      group: build-${{ github.ref }}-${{ matrix.os }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+
+    # Prefer IPv4 & set registry (helps Linux stalls)
+    env:
+      NODE_OPTIONS: --dns-result-order=ipv4first
+      YARN_NPM_REGISTRY_SERVER: https://registry.npmjs.org
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # ---- Superseded guard: skip gracefully if a newer commit exists on this branch ----
+      - name: Determine if this run is superseded
+        id: superseded
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" != "push" ] || [[ "${GITHUB_REF}" != refs/heads/* ]]; then
+            echo "skip_build=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          BRANCH="${GITHUB_REF#refs/heads/}"
+          LATEST_SHA="$(git ls-remote origin "$BRANCH" | awk '{print $1}' | head -n1 || true)"
+          echo "Latest on origin/$BRANCH: ${LATEST_SHA:-<none>}"
+          echo "This run SHA: $GITHUB_SHA"
+
+          if [ -n "${LATEST_SHA:-}" ] && [ "$LATEST_SHA" != "$GITHUB_SHA" ]; then
+            echo "skip_build=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip_build=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Detect project directory
+        if: steps.superseded.outputs.skip_build != 'true'
+        id: detect
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -f "package.json" ]; then
+            PROJECT_DIR="."
+          elif [ -f "electron/package.json" ]; then
+            PROJECT_DIR="electron"
+          else
+            CANDIDATE=$(find . -maxdepth 2 -type f -name package.json -not -path "*/node_modules/*" | head -n 1 || true)
+            if [ -n "${CANDIDATE:-}" ]; then
+              PROJECT_DIR="$(dirname "$CANDIDATE")"
+            else
+              PROJECT_DIR="."
+            fi
+          fi
+          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+          echo "Using PROJECT_DIR=$PROJECT_DIR"
+          mkdir -p "$PROJECT_DIR/dist"
+
+      - name: Read product name
+        if: steps.superseded.outputs.skip_build != 'true'
+        id: meta
+        shell: bash
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+          PRODUCT_NAME=$(node -e "try{console.log(require('./electron-builder.json').productName)}catch(e){try{console.log(require('./package.json').productName)}catch(e2){console.log('app')}}")
+          echo "PRODUCT_NAME=$PRODUCT_NAME" >> "$GITHUB_ENV"
+          echo "product=$PRODUCT_NAME" >> "$GITHUB_OUTPUT"
+          echo "Product: $PRODUCT_NAME"
+
+      - name: Setup Node.js (v24)
+        if: steps.superseded.outputs.skip_build != 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      # Pin Yarn 4 explicitly to avoid CLI incompatibilities
+      - name: Enable Corepack and pin Yarn 4
+        if: steps.superseded.outputs.skip_build != 'true'
+        shell: bash
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+          set -euo pipefail
+          corepack enable
+          corepack prepare yarn@4.9.3 --activate
+          yarn -v
+
+      - name: Show versions
+        if: steps.superseded.outputs.skip_build != 'true'
+        shell: bash
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+          node -v
+          corepack -v || true
+          yarn -v
+
+      - name: Restore Yarn cache (.yarn/cache)
+        if: steps.superseded.outputs.skip_build != 'true'
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ env.PROJECT_DIR }}/.yarn/cache
+            ${{ env.PROJECT_DIR }}/.yarn/install-state.gz
+          key: ${{ runner.os }}-yarn4-${{ hashFiles(format('{0}/yarn.lock', env.PROJECT_DIR)) }}
+          restore-keys: |
+            ${{ runner.os }}-yarn4-
+
+      - name: Cache Electron & builder downloads
+        if: steps.superseded.outputs.skip_build != 'true'
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/electron
+            ~/.cache/electron-builder
+            ~/Library/Caches/electron
+            ~/Library/Caches/electron-builder
+            $LOCALAPPDATA/electron/Cache
+            $LOCALAPPDATA/electron-builder/Cache
+          key: ${{ runner.os }}-ebuild-${{ hashFiles(format('{0}/package.json', env.PROJECT_DIR)) }}
+          restore-keys: |
+            ${{ runner.os }}-ebuild-
+
+      - name: Install Linux deps (with apt lock wait)
+        if: steps.superseded.outputs.skip_build != 'true' && runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo bash -c 'until ! pgrep -x apt >/dev/null && \
+                              ! fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 && \
+                              ! fuser /var/lib/apt/lists/lock >/dev/null 2>&1; do
+                          echo "Waiting for apt/dpkg locks..."; sleep 5; done'
+          sudo apt-get update -y
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends libfuse2 rpm libarchive-tools
+
+      - name: Configure Yarn for CI (registry, timeout, concurrency)
+        if: steps.superseded.outputs.skip_build != 'true'
+        shell: bash
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+          yarn config set npmRegistryServer "${YARN_NPM_REGISTRY_SERVER}"
+          yarn config set httpTimeout 600000
+          yarn config set networkConcurrency 8
+          yarn config get npmRegistryServer
+          yarn config get httpTimeout
+          yarn config get networkConcurrency
+
+      # --------- Install (lockfile-aware) ----------
+      - name: Install dependencies (Yarn 4; lockfile-aware)
+        if: steps.superseded.outputs.skip_build != 'true'
+        shell: bash
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+          set -euo pipefail
+          if [ -f yarn.lock ]; then
+            echo "yarn.lock found -> immutable install"
+            yarn install --immutable --check-cache
+          else
+            echo "No yarn.lock found -> generating lockfile (non-immutable install)"
+            yarn install --no-immutable --check-cache
+            echo "Generated yarn.lock:"
+            ls -l yarn.lock || true
+          fi
+
+      - name: Clean dist (safety)
+        if: steps.superseded.outputs.skip_build != 'true'
+        shell: bash
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: rm -rf dist/* || true
+
+      # --- Build: make signing a NO-OP on macOS ---
+      - name: Build (electron-builder)
+        if: steps.superseded.outputs.skip_build != 'true'
+        continue-on-error: true
+        shell: bash
+        working-directory: ${{ env.PROJECT_DIR }}
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: |
+          if [ "${{ runner.os }}" = "macOS" ]; then
+            unset CSC_LINK CSC_KEY_PASSWORD MAC_CERTS MAC_CERTS_PASSWORD
+          fi
+          yarn ci-build
+
+      - name: Upload artifacts
+        if: steps.superseded.outputs.skip_build != 'true'
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.PRODUCT_NAME }}-${{ runner.os }}-artifacts
+          path: |
+            ${{ env.PROJECT_DIR }}/dist/**
+          if-no-files-found: warn
+          compression-level: 0
+          retention-days: 14
+
+      - name: End (skipped due to newer commit)
+        if: steps.superseded.outputs.skip_build == 'true'
+        run: echo "Newer commit detected on branch; this run skipped intentionally (green check)."
